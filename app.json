@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "LiveStreamingAdminConsole",
-    "slug": "admin-console",
+    "slug": "livestreamingadminconsole",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
@@ -13,7 +13,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "2f4cad33-cee4-46c9-81c6-304a001b695a" 
+        "projectId": "65f1d903-ae3d-48cf-8f37-67d6a5a6629b" 
       }
     },
     "plugins": [
