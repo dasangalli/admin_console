@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "LiveStreamingAdminConsole",
+    "name": "AdminConsole",
     "slug": "livestreamingadminconsole",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -17,7 +17,6 @@
       }
     },
     "plugins": [
-      "expo-router",
       [
         "expo-build-properties",
         {
