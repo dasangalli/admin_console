@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, FlatList, Modal, TextInput, Alert, Text, SafeAreaView } from 'react-native';
 import { List, Button, Card, Badge, ActivityIndicator, Divider, IconButton } from 'react-native-paper';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
-// Cambia questo con l'URL reale del tuo backend caricato (es. https://tua-api.com/api)
 const BACKEND_URL = 'http://129.153.47.200:80/api'; 
 
 export default function App() {
@@ -12,93 +12,140 @@ export default function App() {
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedUrl, setSelectedUrl] = useState('');
   const [streamId, setStreamId] = useState('');
-  const [activeStreams, setActiveStreams] = useState({}); // Mappa { URL: StreamID }
+  
+  // activeStreams tiene traccia del mapping { URL: ID } per gli stream lanciati dall'app
+  const [activeStreams, setActiveStreams] = useState({}); 
+  // serverActiveIds tiene traccia di TUTTI gli ID accesi sulla VM (anche quelli non lanciati da qui)
+  const [serverActiveIds, setServerActiveIds] = useState([]);
 
-  useEffect(() => { fetchMatches(); }, []);
+  useEffect(() => { 
+    initialLoad();
+  }, []);
+
+  const initialLoad = async () => {
+    await loadLocalState();
+    await fetchMatches();
+    await syncWithServer();
+  };
+
+  const loadLocalState = async () => {
+    const saved = await AsyncStorage.getItem('@active_streams');
+    if (saved) setActiveStreams(JSON.parse(saved));
+  };
+
+  // Sincronizza lo stato reale della VM
+  const syncWithServer = async () => {
+    try {
+      const res = await axios.get(`${BACKEND_URL}/active-streams`);
+      setServerActiveIds(res.data.active_ids || []);
+      
+      // Pulizia locale: se un ID nel nostro storage non è più sul server, lo rimuoviamo
+      setActiveStreams(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(url => {
+          if (!res.data.active_ids.includes(updated[url])) {
+            delete updated[url];
+          }
+        });
+        AsyncStorage.setItem('@active_streams', JSON.stringify(updated));
+        return updated;
+      });
+    } catch (e) { console.error("Sync error", e); }
+  };
 
   const fetchMatches = async () => {
     setLoading(true);
     try {
       const res = await axios.get(`${BACKEND_URL}/matches`);
       setMatches(res.data.matches);
-    } catch (err) { 
-      Alert.alert("Errore di Rete", "Impossibile connettersi al backend."); 
-    }
+    } catch (err) { Alert.alert("Errore", "Server non raggiungibile"); }
     setLoading(false);
   };
 
-  const startStream = async () => {
-    if (!streamId) return Alert.alert("ID Mancante", "Inserisci uno Stream ID");
+  const handleHealthCheck = async (url) => {
     try {
-      await axios.post(`${BACKEND_URL}/trigger-action`, { stream_id: streamId, url: selectedUrl });
-      setActiveStreams(prev => ({ ...prev, [selectedUrl]: streamId }));
-      setModalVisible(false);
-      setStreamId('');
-      Alert.alert("🚀 Lanciato", "Workflow GitHub avviato correttamente.");
-    } catch (err) { 
-      Alert.alert("Errore Workflow", "Lancio fallito. Controlla il token GitHub sul server."); 
-    }
+      const res = await axios.post(`${BACKEND_URL}/check-health`, { url });
+      Alert.alert("Health Check", `Stato: ${res.data.status.toUpperCase()}`);
+    } catch (err) { Alert.alert("Errore", "Check fallito"); }
   };
 
-  const endStream = async (url) => {
-    const id = activeStreams[url];
+  const startStream = async () => {
+    try {
+      await axios.post(`${BACKEND_URL}/trigger-action`, { stream_id: streamId, url: selectedUrl });
+      const newActive = { ...activeStreams, [selectedUrl]: streamId };
+      setActiveStreams(newActive);
+      await AsyncStorage.setItem('@active_streams', JSON.stringify(newActive));
+      setModalVisible(false);
+      setStreamId('');
+      syncWithServer(); // Rinfresca subito
+    } catch (err) { Alert.alert("Errore", "Lancio fallito"); }
+  };
+
+  const endStream = async (id, url = null) => {
     try {
       await axios.post(`${BACKEND_URL}/stop-stream`, { stream_id: id });
-      const newStreams = { ...activeStreams };
-      delete newStreams[url];
-      setActiveStreams(newStreams);
-      Alert.alert("🛑 Terminato", `Il container sentinel-${id} è stato rimosso dalla VM.`);
-    } catch (err) { 
-      Alert.alert("Errore SSH", "Impossibile fermare lo stream sulla VM."); 
-    }
+      if (url) {
+        const newActive = { ...activeStreams };
+        delete newActive[url];
+        setActiveStreams(newActive);
+        await AsyncStorage.setItem('@active_streams', JSON.stringify(newActive));
+      }
+      syncWithServer(); // Forza rinfresco della lista server
+    } catch (err) { Alert.alert("Errore", "Impossibile stoppare lo stream"); }
+  };
+
+  // RENDER SEZIONE GESTIONE (Stream realmente accesi sul server)
+  const renderActiveManagement = () => {
+    if (serverActiveIds.length === 0) return null;
+
+    return (
+      <Card style={[styles.card, { backgroundColor: '#e8f5e9' }]}>
+        <List.Accordion title="📡 GESTIONE STREAM ATTIVI (VM)" left={p => <List.Icon {...p} icon="server" color="green" />}>
+          {serverActiveIds.map((id) => {
+            // Cerchiamo se questo ID corrisponde a un URL che conosciamo
+            const knownUrl = Object.keys(activeStreams).find(key => activeStreams[key] === id);
+            return (
+              <List.Item
+                key={id}
+                title={`Stream ID: ${id}`}
+                description={knownUrl || "Avviato esternamente / Manuale"}
+                right={p => <IconButton icon="stop-circle" color="red" onPress={() => endStream(id, knownUrl)} />}
+              />
+            );
+          })}
+        </List.Accordion>
+      </Card>
+    );
   };
 
   const renderMatch = ({ item }) => (
     <Card style={styles.card}>
-      <List.Accordion 
-        title={item.match} 
-        titleStyle={styles.matchTitle}
-        // --- AGGIUNTA ORARIO QUI ---
-        description={`Inizio programmato: ${item.time}`}
-        descriptionStyle={styles.matchTime}
-        left={p => <List.Icon {...p} icon="calendar-clock" color="#6200ee" />}
-      >
-        <Divider />
-        {item.streams.map((s, i) => (
-          <List.Accordion 
-            key={i} 
-            title={s.language} 
-            style={styles.subList} 
-            left={p => <List.Icon {...p} icon="translate" />}
-          >
-            <List.Item 
-              title="Sniff & Deploy" 
-              description={s.url}
-              descriptionStyle={{fontSize: 11}}
-              onPress={() => { setSelectedUrl(s.url); setModalVisible(true); }}
-              right={p => <List.Icon {...p} icon="play-circle" color="#4CAF50" />}
-            />
-            
-            {activeStreams[s.url] && (
-              <View style={styles.liveContainer}>
-                <View style={styles.row}>
-                  <Badge style={styles.liveBadge}>LIVE</Badge>
-                  <Text style={styles.idText}>Active ID: {activeStreams[s.url]}</Text>
+      <List.Accordion title={item.match} description={item.time} left={p => <List.Icon {...p} icon="calendar-clock" />}>
+        {item.streams.map((s, i) => {
+          const isLive = serverActiveIds.includes(activeStreams[s.url]);
+          return (
+            <React.Fragment key={i}>
+              <View style={styles.streamRow}>
+                <View style={{ flex: 1 }}>
+                  <List.Item 
+                    title={s.language} 
+                    description={s.url} 
+                    onPress={() => { setSelectedUrl(s.url); setModalVisible(true); }}
+                    left={p => <List.Icon {...p} icon="play-circle" color={isLive ? "red" : "green"} />}
+                  />
                 </View>
-                <Button 
-                  mode="contained" 
-                  color="#D32F2F" 
-                  onPress={() => endStream(s.url)}
-                  icon="stop"
-                  style={styles.endBtn}
-                >
-                  End Stream
-                </Button>
+                <IconButton icon="heart-pulse" color="blue" onPress={() => handleHealthCheck(s.url)} />
+                {isLive && <Badge style={styles.liveBadge}>LIVE</Badge>}
               </View>
-            )}
-            <Divider />
-          </List.Accordion>
-        ))}
+              {isLive && (
+                <Button mode="outlined" onPress={() => endStream(activeStreams[s.url], s.url)} style={styles.endBtnInside}>
+                  Stop Stream {activeStreams[s.url]}
+                </Button>
+              )}
+              <Divider />
+            </React.Fragment>
+          );
+        })}
       </List.Accordion>
     </Card>
   );
@@ -107,40 +154,24 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Sentinel Dashboard</Text>
-        <IconButton icon="refresh" onPress={fetchMatches} />
+        <IconButton icon="sync" onPress={() => { fetchMatches(); syncWithServer(); }} />
       </View>
-
-      {loading ? (
-        <ActivityIndicator animating={true} size="large" style={{marginTop: 50}} />
-      ) : (
-        <FlatList 
-          data={matches} 
-          keyExtractor={(_, i) => i.toString()} 
-          renderItem={renderMatch} 
-          onRefresh={fetchMatches} 
-          refreshing={loading}
-          contentContainerStyle={{paddingBottom: 20}}
-        />
-      )}
-
-      {/* Modal per inserimento Stream ID */}
-      <Modal visible={modalVisible} transparent animationType="slide">
+      <FlatList 
+        ListHeaderComponent={renderActiveManagement}
+        data={matches} 
+        renderItem={renderMatch} 
+        keyExtractor={(_, i) => i.toString()} 
+        onRefresh={initialLoad}
+        refreshing={loading}
+      />
+      
+      <Modal visible={modalVisible} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Inizializza Stream</Text>
-            <Text style={styles.modalSub}>Inserisci un ID numerico per identificare il container sulla VM.</Text>
-            <TextInput 
-              style={styles.input} 
-              placeholder="Stream ID (es: 1, 10, 100...)" 
-              value={streamId} 
-              onChangeText={setStreamId} 
-              keyboardType="numeric" 
-              autoFocus
-            />
-            <View style={styles.modalButtons}>
-              <Button onPress={() => setModalVisible(false)} style={{flex: 1}}>Annulla</Button>
-              <Button mode="contained" onPress={startStream} style={{flex: 1, marginLeft: 10}}>Avvia</Button>
-            </View>
+            <Text style={styles.modalTitle}>Avvia ID Stream</Text>
+            <TextInput style={styles.input} placeholder="ID (es: 1)" value={streamId} onChangeText={setStreamId} keyboardType="numeric" />
+            <Button mode="contained" onPress={startStream}>Lancia</Button>
+            <Button onPress={() => setModalVisible(false)}>Chiudi</Button>
           </View>
         </View>
       </Modal>
@@ -150,36 +181,14 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f7f6' },
-  header: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    paddingHorizontal: 20, 
-    paddingVertical: 15,
-    backgroundColor: '#fff',
-    elevation: 2
-  },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#333' },
-  card: { marginHorizontal: 12, marginVertical: 6, borderRadius: 10, overflow: 'hidden' },
-  matchTitle: { fontWeight: 'bold', fontSize: 16 },
-  matchTime: { color: '#666', fontSize: 13, marginTop: 2 },
-  subList: { backgroundColor: '#fcfcfc' },
-  liveContainer: { 
-    padding: 15, 
-    backgroundColor: '#fff5f5', 
-    borderLeftWidth: 4, 
-    borderLeftColor: '#f44336',
-    margin: 10,
-    borderRadius: 5
-  },
-  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  liveBadge: { backgroundColor: '#f44336', fontWeight: 'bold' },
-  idText: { marginLeft: 10, fontWeight: '600', color: '#f44336' },
-  endBtn: { marginTop: 5 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 15, backgroundColor: '#fff', elevation: 4 },
+  headerTitle: { fontSize: 18, fontWeight: 'bold' },
+  card: { margin: 8, borderRadius: 8 },
+  streamRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 10 },
+  liveBadge: { backgroundColor: 'red', alignSelf: 'center', marginRight: 10 },
+  endBtnInside: { margin: 10, borderColor: 'red' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
-  modalCard: { backgroundColor: 'white', padding: 25, borderRadius: 15, elevation: 5 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 5 },
-  modalSub: { fontSize: 13, color: '#666', marginBottom: 20 },
-  input: { borderBottomWidth: 2, borderColor: '#6200ee', padding: 12, marginBottom: 25, fontSize: 16 },
-  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end' }
+  modalCard: { backgroundColor: 'white', padding: 20, borderRadius: 12 },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
+  input: { borderBottomWidth: 1, marginBottom: 20, padding: 8 }
 });
