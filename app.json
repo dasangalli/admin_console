@@ -6,16 +6,27 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "adminconsole",
+    
+    "splash": {
+      "backgroundColor": "#121212",
+      "resizeMode": "contain"
+    },
+
     "android": {
       "package": "com.admin.console",
       "versionCode": 1,
-      "usesCleartextTraffic": true
-    },
-    "extra": {
-      "eas": {
-        "projectId": "5880371e-2bc3-4c20-baf7-399ecebe67e3" 
+      "usesCleartextTraffic": true,
+      "splash": {
+        "backgroundColor": "#121212"
       }
     },
+
+    "extra": {
+      "eas": {
+        "projectId": "5880371e-2bc3-4c20-baf7-399ecebe67e3"
+      }
+    },
+
     "plugins": [
       [
         "expo-build-properties",
